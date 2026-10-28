@@ -70,7 +70,6 @@ create_router_template() {
     "$VBOXMANAGE_BIN" modifyvm "$VM_NAME" \
         --groups "$VM_ROUTERS_GROUP"
 
-    
 
     # NIC2..NICN = Internal Network
     #
@@ -143,9 +142,13 @@ create_router_template() {
 
 # enable SSH service
 /ip service enable ssh
+/ip ssh set password-authentication=yes
 
 # create sysadmin user
 /user add name=sysadmin group=full password="Asdqwe!23" comment="sysadmin user" disabled=no
+
+# create vcorp_auditor user
+/user add name=vcorp_auditor group=full password="Asdqwe!23" comment="sysadmin user" disabled=no
 
 EOF
 
@@ -162,6 +165,13 @@ EOF
         "$SSH_PUBLIC_KEY_DIR/vcorp_sysadmin.pub" \
         admin@127.0.0.1:sysadmin.pub
 
+    scp \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -P "$SSH_PORT" \
+        "$SSH_PUBLIC_KEY_DIR/vcorp_auditor.pub" \
+        admin@127.0.0.1:vcorp_auditor.pub
+
     ssh \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
@@ -169,6 +179,7 @@ EOF
         admin@127.0.0.1 <<EOF
 
 /user ssh-keys import user=sysadmin public-key-file=sysadmin.pub
+/user ssh-keys import user=vcorp_auditor public-key-file=vcorp_auditor.pub
 
 EOF
 
@@ -182,12 +193,27 @@ EOF
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -p "$SSH_PORT" \
-        admin@127.0.0.1 \
+        sysadmin@127.0.0.1 \
         "/interface print detail"
 
     # =========================
     # SHUTDOWN
     # =========================
+log_info "Copiant i important la clau SSH de l'auditor (vcorp-auditor.pub)..."
+    scp -P "${SSH_PORT}" \
+        -o StrictHostKeyChecking=no \
+        -i "${PRIVATE_KEY_DIR}/vcorp_mikrotik" \
+        "${PUBLIC_KEY_DIR}/vcorp-auditor.pub" \
+        sysadmin@127.0.0.1:/vcorp-auditor.pub
+
+    ssh -p "${SSH_PORT}" \
+        -o StrictHostKeyChecking=no \
+        -i "${PRIVATE_KEY_DIR}/vcorp_mikrotik" \
+        sysadmin@127.0.0.1 \
+        '/user ssh-keys import public-key-file=vcorp-auditor.pub user=sysadmin' || true
+
+
+
 
     log_info "Shutting down VM"
 
@@ -480,7 +506,6 @@ bootstrap_routeros() {
     local ssh_port="$2"
 
     log_info "Arrencant '$name' per fer el bootstrap"
-
     "$VBOXMANAGE_BIN" startvm "$name" --type headless || return 1
 
     log_info "Esperant SSH de RouterOS a 127.0.0.1:$ssh_port"
@@ -506,7 +531,12 @@ bootstrap_routeros() {
         admin@127.0.0.1 <<'EOF'
 
 /ip service enable ssh
+/ip ssh set password-authentication=yes
 /user add name=sysadmin group=full password="Asdqwe!23" comment="sysadmin user" disabled=no
+
+# create vcorp_auditor user
+/user add name=vcorp_auditor group=full password="Asdqwe!23" comment="sysadmin user" disabled=no
+
 
 EOF
 
@@ -530,6 +560,14 @@ EOF
         admin@127.0.0.1:sysadmin.pub \
         || return 1
 
+    # Subir la nueva clave
+    scp \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -P "$ssh_port" \
+        "$SSH_PUBLIC_KEY_DIR/vcorp_auditor.pub" \
+        admin@127.0.0.1:vcorp_auditor.pub \
+        || return 1
 
     ssh \
         -o StrictHostKeyChecking=no \
@@ -538,6 +576,7 @@ EOF
         admin@127.0.0.1 <<'EOF'
 
 /user ssh-keys import user=sysadmin public-key-file=sysadmin.pub
+/user ssh-keys import user=vcorp_auditor public-key-file=vcorp_auditor.pub
 
 EOF
 
