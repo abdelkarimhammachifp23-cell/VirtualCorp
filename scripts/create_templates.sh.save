@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+source configs/templates/templates.conf
+
+ie() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+command -v VBoxManage >/dev/null || die "VirtualBox no está instalado."
+command -v wget >/dev/null || die "wget no está instalado."
+
+mkdir -p iso build/keys
+
+DEBIAN_ISO_PATH="$ROOT/iso/$DEBIAN_ISO"
+
+if [[ ! -s "$DEBIAN_ISO_PATH" ]]; then
+    echo "Descargando Debian..."
+    wget -O "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_URL"
+    mv "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_PATH"
+else
+    echo "ISO Debian existente. Se omite la descarga."
+fi
+
+if [[ -f "${PROFESSOR_KEY:-}" && -f "${PERSONAL_KEY:-}" ]]; then
+    cat "$PROFESSOR_KEY" "$PERSONAL_KEY" |
+        awk 'NF && !seen[$0]++' > build/keys/authorized_keys
+    chmod 600 build/keys/authorized_keys
+else
+    echo "AVIS  local DISK="$4"
+    local PRESEED_FILE="$5"
+    local VM_HOSTNAME="$6"
+
+    echo "Creando plantilla: $NAME"
+
+    if VBoxManage showvminfo "$NAME" >/dev/null 2>&1; then
+        echo "La máquina $NAME ya existe. Se omite."
+        return
+    fi
+
+    VBoxManage createvm \
+        --name "$NAME" \
+        --ostype Debian_64 \
+        --register
+
+    VBoxManage modifyvm "$NAME" \
+        --memory "$RAM" \
+        --cpus "$CPU" \
+        --nic1 "$NETWORK_MODE" \
+        --intnet1 "$NETWORK_NAME" \
+        --cableconnected1 on \
+        --boot1 dvd \
+        --boot2 disk
+
+    local VM_DIR="$HOME/VirtualBox VMs/$NAME"
+
+    mkdir -p "$VM_DIR"
+
+    VBoxManage createmedium disk \
+        --filename "$VM_DIR/$NAME.vdi" \
+        --size "$((DISK * 1024))" \
+        --format VDI
+
+    VBoxManage storagectl "$NAME" \
+        --name SATA \
+        --add sata \
+        --controller IntelAhci
+
+    VBoxManag#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+source configs/templates/templates.conf
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+command -v VBoxManage >/dev/null 2>&1 || die "VirtualBox no está instalado."
+command -v wget >/dev/null 2>&1 || die "wget no está instalado."
+
+mkdir -p iso
+
+# ==========================================
+# DESCARGA DEBIAN
+# ==========================================
+
+DEBIAN_ISO_PATH="$ROOT/iso/$DEBIAN_ISO"
+
+if [[ ! -s "$DEBIAN_ISO_PATH" ]]; then
+    echo "Descargando ISO Debian..."
+
+    wget -O "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_URL"
+    mv "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_PATH"
+else
+    echo "ISO Debian existente. Se omite la descarga."
+fi
+
+# ==========================================
+# DESCARGA PROXMOX
+# ==========================================
+
+PROXMOX_ISO_PATH="$ROOT/iso/$PROXMOX_ISO"
+
+if [[ ! -s "$PROXMOX_ISO_PATH" ]]; then
+    echo "Descargando ISO Proxmox..."
+
+    wget --no-check-certificate \
+        -O "$PROXMOX_ISO_PATH.part" \
+        "$PROXMOX_ISO_URL"
+
+    mv "$PROXMOX_ISO_PATH.part" "$PROXMOX_ISO_PATH"
+else
+    echo "ISO Proxmox existente. Se omite la descarga."
+fi
+
+# ==========================================
+# COMPROBACIONES
+# ==========================================
+
+[[ -s "$DEBIAN_ISO_PATH" ]] || die "No se encuentra la ISO Debian."
+[[ -s "$PROXMOX_ISO_PATH" ]] || die "No se encuentra la ISO Proxmox."
+
+[[ -f infrastructure/preseed/server.cfg ]] || die "Falta server.cfg."
+[[ -f infrastructure/preseed/desktop.cfg ]] || die "Falta desktop.cfg."
+
+# ==========================================
+# CREACIÓN DE MÁQUINAS
+# ==========================================
+
+create_vm() {
+
+    if [[ "$#" -ne 6 ]]; then
+        die "Número incorrecto de argumentos en create_vm."
+    fi
+
+    local NAME="$1"
+    local RAM="$2"
+    local CPU="$3"
+    local DISK="$4"
+    local PRESEED="$5"
+    local VM_HOSTNAME="$6"
+
+    echo ""
+    echo "Comprobando máquina: $NAME"
+
+    if VBoxManage showvminfo "$NAME" >/dev/null 2>&1; then
+        echo "La máquina $NAME ya existe. Se omite."
+        return 0
+    fi
+
+    echo "Creando máquina: $NAME"
+
+    [[ -f "$PRESEED" ]] || die "No existe $PRESEED."
+
+    local VM_DIR="$HOME/VirtualBox VMs/$NAME"
+
+    mkdir -p "$VM_DIR"
+
+    VBoxManage createvm \
+        --name "$NAME" \
+        --ostype Debian_64 \
+        --register
+
+    VBoxManage modifyvm "$NAME" \
+        --memory "$RAM" \
+        --cpus "$CPU" \
+        --nic1 "$NETWORK_MODE" \
+        --intnet1 "$NETWORK_NAME" \
+        --cableconnected1 on \
+        --boot1 dvd \
+        --boot2 disk
+
+    VBoxManage createmedium disk \
+        --filename "$VM_DIR/$NAME.vdi" \
+        --size "$((DISK * 1024))" \
+        --format VDI
+
+    VBoxManage storagectl "$NAME" \
+        --name SATA \
+        --add sata \
+        --controller IntelAhci
+
+    VBoxManage storageattach "$NAME" \
+        --storagectl SATA \
+        --port 0 \
+        --device 0 \
+        --type hdd \
+        --medium "$VM_DIR/$NAME.vdi"
+
+    VBoxManage storageattach "$NAME" \
+        --storagectl SATA \
+        --port 1 \
+        --device 0 \
+        --type dvddrive \
+        --medium "$DEBIAN_ISO_PATH"
+
+    echo "Iniciando instalación automática de $NAME..."
+
+    VBoxManage unattended install "$NAME" \
+        --iso="$DEBIAN_ISO_PATH" \
+        --user="$VM_USER" \
+        --password='Asdqwe!23' \
+        --full-user-name="VirtualCorp Admin" \
+        --hostname="$VM_HOSTNAME" \
+        --locale="es_ES" \
+        --country="ES" \
+        --time-zone="Europe/Madrid" \
+        --script-template="$PRESEED" \
+        --start-vm=headless
+
+    echo "Instalación iniciada para $NAME."
+}
+
+# ==========================================
+# DEBIAN SERVER
+# ==========================================
+
+create_vm \
+    "$SERVER_TEMPLATE" \
+    "$VM_RAM_SERVER" \
+    "$VM_CPU_SERVER" \
+    "$VM_DISK_SERVER" \
+    "infrastructure/preseed/server.cfg" \
+    "$SERVER_HOSTNAME"
+
+# ==========================================
+# DEBIAN DESKTOP
+# ==========================================
+
+create_vm \
+    "$DESKTOP_TEMPLATE" \
+    "$VM_RAM_DESKTOP" \
+    "$VM_CPU_DESKTOP" \
+    "$VM_DISK_DESKTOP" \
+    "infrastructure/preseed/desktop.cfg" \
+    "$DESKTOP_HOSTNAME"
+
+echo ""
+echo "=========================================="
+echo "PROCESO FINALIZADO"
+echo "=========================================="
+
+VBoxManage list vms#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+source configs/templates/templates.conf
+
+die() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+command -v VBoxManage >/dev/null 2>&1 || die "VirtualBox no está instalado."
+command -v wget >/dev/null 2>&1 || die "wget no está instalado."
+
+mkdir -p iso
+
+# ==========================================
+# DESCARGA DEBIAN
+# ==========================================
+
+DEBIAN_ISO_PATH="$ROOT/iso/$DEBIAN_ISO"
+
+if [[ ! -s "$DEBIAN_ISO_PATH" ]]; then
+    echo "Descargando ISO Debian..."
+
+    wget -O "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_URL"
+    mv "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_PATH"
+else
+    echo "ISO Debian existente. Se omite la descarga."
+fi
+
+# ==========================================
+# DESCARGA PROXMOX
+# ==========================================
+
+PROXMOX_ISO_PATH="$ROOT/iso/$PROXMOX_ISO"
+
+if [[ ! -s "$PROXMOX_ISO_PATH" ]]; then
+    echo "Descargando ISO Proxmox..."
+
+    wget --no-check-certificate \
+        -O "$PROXMOX_ISO_PATH.part" \
+        "$PROXMOX_ISO_URL"
+
+    mv "$PROXMOX_ISO_PATH.part" "$PROXMOX_ISO_PATH"
+else
+    echo "ISO Proxmox existente. Se omite la descarga."
+fi
+
+# ==========================================
+# COMPROBACIONES
+# ==========================================
+
+[[ -s "$DEBIAN_ISO_PATH" ]] || die "No se encuentra la ISO Debian."
+[[ -s "$PROXMOX_ISO_PATH" ]] || die "No se encuentra la ISO Proxmox."
+
+[[ -f infrastructure/preseed/server.cfg ]] || die "Falta server.cfg."
+[[ -f infrastructure/preseed/desktop.cfg ]] || die "Falta desktop.cfg."
+
+# ==========================================
+# CREACIÓN DE MÁQUINAS
+# ==========================================
+
+create_vm() {
+
+    if [[ "$#" -ne 6 ]]; then
+        die "Número incorrecto de argumentos en create_vm."
+    fi
+
+    local NAME="$1"
+    local RAM="$2"
+    local CPU="$3"
+    local DISK="$4"
+    local PRESEED="$5"
+    local VM_HOSTNAME="$6"
+
+    echo ""
+    echo "Comprobando máquina: $NAME"
+
+    if VBoxManage showvminfo "$NAME" >/dev/null 2>&1; then
+        echo "La máquina $NAME ya existe. Se omite."
+        return 0
+    fi
+
+    echo "Creando máquina: $NAME"
+
+    [[ -f "$PRESEED" ]] || die "No existe $PRESEED."
+
+    local VM_DIR="$HOME/VirtualBox VMs/$NAME"
+
+    mkdir -p "$VM_DIR"
+
+    VBoxManage createvm \
+        --name "$NAME" \
+        --ostype Debian_64 \
+        --register
+
+    VBoxManage modifyvm "$NAME" \
+        --memory "$RAM" \
+        --cpus "$CPU" \
+        --nic1 "$NETWORK_MODE" \
+        --intnet1 "$NETWORK_NAME" \
+        --cableconnected1 on \
+        --boot1 dvd \
+        --boot2 disk
+
+    VBoxManage createmedium disk \
+        --filename "$VM_DIR/$NAME.vdi" \
+        --size "$((DISK * 1024))" \
+        --format VDI
+
+    VBoxManage storagectl "$NAME" \
+        --name SATA \
+        --add sata \
+        --controller IntelAhci
+
+    VBoxManage storageattach "$NAME" \
+        --storagectl SATA \
+        --port 0 \
+        --device 0 \
+        --type hdd \
+        --medium "$VM_DIR/$NAME.vdi"
+
+    VBoxManage storageattach "$NAME" \
+        --storagectl SATA \
+        --port 1 \
+        --device 0 \
+        --type dvddrive \
+        --medium "$DEBIAN_ISO_PATH"
+
+    echo "Iniciando instalación automática de $NAME..."
+
+    VBoxManage unattended install "$NAME" \
+        --iso="$DEBIAN_ISO_PATH" \
+        --user="$VM_USER" \
+        --password='Asdqwe!23' \
+        --full-user-name="VirtualCorp Admin" \
+        --hostname="$VM_HOSTNAME" \
+        --locale="es_ES" \
+        --country="ES" \
+        --time-zone="Europe/Madrid" \
+        --script-template="$PRESEED" \
+        --start-vm=headless
+
+    echo "Instalación iniciada para $NAME."
+}
+
+# ==========================================
+# DEBIAN SERVER
+# ==========================================
+
+create_vm \
+    "$SERVER_TEMPLATE" \
+    "$VM_RAM_SERVER" \
+    "$VM_CPU_SERVER" \
+    "$VM_DISK_SERVER" \
+    "infrastructure/preseed/server.cfg" \
+    "$SERVER_HOSTNAME"
+
+# ==========================================
+# DEBIAN DESKTOP
+# ==========================================
+
+create_vm \
+    "$DESKTOP_TEMPLATE" \
+    "$VM_RAM_DESKTOP" \
+    "$VM_CPU_DESKTOP" \
+    "$VM_DISK_DESKTOP" \
+    "infrastructure/preseed/desktop.cfg" \
+    "$DESKTOP_HOSTNAME"
+
+echo ""
+echo "=========================================="
+echo "PROCESO FINALIZADO"
+echo "=========================================="
+
+VBoxManage list vmsstorageattach "$NAME" \
+        --storagectl SATA \
+        --port 0 \
+        --device 0 \
+        --type hdd \
+        --medium "$VM_DIR/$NAME.vdi"
+
+    VBoxManage storageattach "$NAME" \
+        --storagectl SATA \
+        --port 1 \
+        --device 0 \
+        --type dvddrive \
+        --medium "$DEBIAN_ISO_PATH"
+
+    [[ -f "$PRESEED_FILE" ]] || die "No existe $PRESEED_FILE"
+
+    echo "Configurando instalación de $NAME..."
+
+    VBoxManage unattended install "$NAME" \
+        --iso="$DEBIAN_ISO_PATH" \
+        --user="sysadmin" \
+        --password='ASDQWE!"·' \
+        --full-user-name="VirtualCorp Admin" \
+        --hostname="$VM_HOSTNAME.virtualcorp.local" \
+        --locale="es_ES" \
+        --country="ES" \
+        --time-zone="Europe/Madrid" \
+        --script-template="$PRESEED_FILE"
+
+    echo "Iniciando instalación de $NAME..."
+
+    VBoxManage startvm "$NAME" --type gui
+
+    echo "Instalación iniciada para $NAME."
+}
+
+create_vm 
+    "$SERVER_TEMPLATE" 
+    "$VM_RAM_SERVER" 
+    "$VM_CPU_SERVER" 
+    "$VM_DISK_SERVER" 
+    "infrastructure/preseed/server.cfg" 
+    "debian-server"
+
+create_vm 
+    "$DESKTOP_TEMPLATE" 
+    "$VM_RAM_DESKTOP" 
+    "$VM_CPU_DESKTOP" 
+    "$VM_DISK_DESKTOP" 
+    "infrastructure/preseed/desktop.cfg" 
+    "debian-desktop"
+
+echo "Creación finalizada."
+VBoxManage list vms

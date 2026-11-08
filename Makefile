@@ -40,3 +40,24 @@ ssh-keys:
 
 routeros-box:
 	"$(BOOTSTRAP_DIR)/create_mikrotik_box.sh"
+.PHONY: create_templates check_templates
+
+create_templates:
+	@echo "Creando templates Debian Server y Debian Desktop..."
+	@bash scripts/create_templates.sh $(TEMPLATES)
+	@echo "Proceso de creación finalizado."
+
+check_templates:
+	@bash -n infrastructure/bash/create_vms.sh
+	@bash -n infrastructure/bash/create_templates.sh
+	@bash -n scripts/create_templates.sh
+	@test -f configs/templates/templates.conf
+	@test -f infrastructure/preseed/server.cfg
+	@test -f infrastructure/preseed/desktop.cfg
+	@test -x scripts/create_templates.sh
+	@echo "Configuracion de templates correcta."
+.PHONY: deploy_equipment
+
+deploy_equipment:
+	@echo "Desplegando equipos VirtualCorp..."
+	@bash scripts/deploy_equipment.sh

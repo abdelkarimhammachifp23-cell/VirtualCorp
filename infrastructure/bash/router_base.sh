@@ -199,18 +199,6 @@ EOF
     # =========================
     # SHUTDOWN
     # =========================
-log_info "Copiant i important la clau SSH de l'auditor (vcorp_auditor.pub)..."
-    scp -P "${SSH_PORT}" \
-        -o StrictHostKeyChecking=no \
-        -i "${PRIVATE_KEY_DIR}/vcorp_mikrotik" \
-        "${PUBLIC_KEY_DIR}/vcorp_auditor.pub" \
-        sysadmin@127.0.0.1:/vcorp_auditor.pub
-
-    ssh -p "${SSH_PORT}" \
-        -o StrictHostKeyChecking=no \
-        -i "${PRIVATE_KEY_DIR}/vcorp_mikrotik" \
-        sysadmin@127.0.0.1 \
-        '/user ssh-keys import public-key-file=vcorp_auditor.pub user=sysadmin' || true
 
 
 

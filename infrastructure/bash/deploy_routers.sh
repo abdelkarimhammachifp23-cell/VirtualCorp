@@ -31,12 +31,26 @@ create_router "mikrotik2" 2202 \
   --ips "10.10.0.230/30" "10.10.0.233/30" "10.10.1.1/24" "10.10.2.1/24" \
   --gateway "10.10.0.229"
 
+
 # Desplegament de mikrotik3
 create_router "mikrotik3" 2203 \
   --intnets "r2-r3" "pl3" "pl3-direccio" \
   --ips "10.10.0.234/30" "10.10.3.1/25" "10.10.3.129/25" \
-  --gateway "10.10.0.233"
+   --gateway "10.10.0.233"
+
 
 log_info "=========================================="
 log_info "[+] Routers desplegats correctament."
 log_info "=========================================="
+
+# DHCP de pl0 (mikrotik1, ether4)
+log_info "Configurant DHCP a mikrotik1"
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+  -J sysadmin@127.0.0.1:2200 sysadmin@10.10.0.226 '
+/ip dhcp-server remove [find name=dhcp-pl0]
+/ip dhcp-server network remove [find address=10.10.0.0/25]
+/ip pool remove [find name=pool-pl0]
+/ip pool add name=pool-pl0 ranges=10.10.0.100-10.10.0.126
+/ip dhcp-server add name=dhcp-pl0 interface=ether4 address-pool=pool-pl0 lease-time=1d disabled=no
+/ip dhcp-server network add address=10.10.0.0/25 gateway=10.10.0.1 dns-server=8.8.8.8
+'
