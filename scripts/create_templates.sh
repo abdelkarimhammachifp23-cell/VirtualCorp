@@ -1,231 +1,235 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 source configs/templates/templates.conf
+
+VBOX="${VBOXMANAGE_BIN:-VBoxManage}"
+ISO="$ROOT/iso/$DEBIAN_ISO"
+BUILD="$ROOT/build"
+TIMEOUT=3600
 
 die() {
     echo "ERROR: $*" >&2
     exit 1
 }
 
-command -v VBoxManage >/dev/null 2>&1 || die "VirtualBox no está instalado."
-command -v wget >/dev/null 2>&1 || die "wget no está instalado."
+command -v "$VBOX" >/dev/null || die "Falta VirtualBox."
+command -v wget >/dev/null || die "Falta wget."
+command -v python3 >/dev/null || die "Falta Python 3."
 
-mkdir -p iso
+# Compatibilidad con el nombre real del archivo del profesor.
+if [[ ! -f "$PROFESSOR_KEY" && -f configs/ssh/vcorp_auditor.pub ]]; then
+    PROFESSOR_KEY="configs/ssh/vcorp_auditor.pub"
+fi
 
-# ==========================================
-# DESCARGA DEBIAN
-# ==========================================
+[[ -f "$PROFESSOR_KEY" ]] || die "No existe la clave del profesor."
+[[ -f "$PERSONAL_KEY" ]] || die "No existe la clave personal."
 
-DEBIAN_ISO_PATH="$ROOT/iso/$DEBIAN_ISO"
+mkdir -p iso "$BUILD/preseed"
 
-if [[ ! -s "$DEBIAN_ISO_PATH" ]]; then
+if [[ ! -s "$ISO" ]]; then
     echo "Descargando Debian..."
-    wget -O "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_URL"
-    mv "$DEBIAN_ISO_PATH.part" "$DEBIAN_ISO_PATH"
-else
-    echo "ISO Debian existente. Se omite."
+    wget -O "$ISO.part" "$DEBIAN_ISO_URL"
+    mv "$ISO.part" "$ISO"
 fi
 
-# ==========================================
-# DESCARGA PROXMOX
-# ==========================================
+# Preparar claves públicas.
+KEYS_B64="$(
+    cat "$PROFESSOR_KEY" "$PERSONAL_KEY" |
+    sort -u |
+    base64 -w0
+)"
 
-PROXMOX_ISO_PATH="$ROOT/iso/$PROXMOX_ISO"
+[[ -n "$KEYS_B64" ]] || die "No se pudieron preparar las claves SSH."
 
-if [[ ! -s "$PROXMOX_ISO_PATH" ]]; then
-    echo "Descargando Proxmox..."
+PASSWORD_FILE="$(mktemp)"
+chmod 600 "$PASSWORD_FILE"
+printf '%s\n' "$VM_PASSWORD" > "$PASSWORD_FILE"
 
-    wget --no-check-certificate \
-        -O "$PROXMOX_ISO_PATH.part" \
-        "$PROXMOX_ISO_URL"
+trap 'rm -f "$PASSWORD_FILE"' EXIT
 
-    mv "$PROXMOX_ISO_PATH.part" "$PROXMOX_ISO_PATH"
-else
-    echo "ISO Proxmox existente. Se omite."
-fi
+prepare_preseed() {
+    local SOURCE="$1"
+    local DEST="$2"
 
-# ==========================================
-# COMPROBACIONES
-# ==========================================
+    VM_PASSWORD="$VM_PASSWORD" KEYS_B64="$KEYS_B64" \
+    python3 - "$SOURCE" "$DEST" <<'PY'
+import os
+import sys
 
-[[ -s "$DEBIAN_ISO_PATH" ]] || die "Falta la ISO Debian."
-[[ -s "$PROXMOX_ISO_PATH" ]] || die "Falta la ISO Proxmox."
+source, destination = sys.argv[1:3]
+password = os.environ["VM_PASSWORD"]
+keys = os.environ["KEYS_B64"]
 
-# ==========================================
-# CREAR MÁQUINAS
-# ==========================================
+with open(source, encoding="utf-8") as f:
+    lines = f.readlines()
 
-create_vm() {
-    [[ "$#" -eq 6 ]] || die "Argumentos incorrectos en create_vm."
+result = []
+password_added = False
 
+for line in lines:
+    if line.startswith("d-i passwd/user-password"):
+        continue
+
+    if line.startswith("d-i preseed/late_command"):
+        continue
+
+    if line.startswith("d-i finish-install/reboot_in_progress"):
+        continue
+
+    if line.startswith("d-i debian-installer/exit/poweroff"):
+        continue
+
+    result.append(line)
+
+    if line.startswith("d-i passwd/username") and not password_added:
+        result.append(f"d-i passwd/user-password password {password}\n")
+        result.append(f"d-i passwd/user-password-again password {password}\n")
+        password_added = True
+
+if not password_added:
+    raise SystemExit("No se encontró passwd/username en el Preseed.")
+
+result.extend([
+    "d-i finish-install/reboot_in_progress note\n",
+    "d-i debian-installer/exit/halt boolean true\n",
+    "d-i debian-installer/exit/poweroff boolean true\n",
+])
+
+result.append(
+    "d-i preseed/late_command string "
+    "in-target usermod -aG sudo sysadmin; "
+    "in-target install -d -m 700 -o sysadmin -g sysadmin /home/sysadmin/.ssh; "
+    f"in-target sh -c 'echo {keys} | base64 -d > /home/sysadmin/.ssh/authorized_keys'; "
+    "in-target chown sysadmin:sysadmin /home/sysadmin/.ssh/authorized_keys; "
+    "in-target chmod 600 /home/sysadmin/.ssh/authorized_keys; "
+    "in-target systemctl enable ssh; "
+    "in-target sh -c 'printf \"auto lo\\niface lo inet loopback\\n\\nallow-hotplug enp0s3\\niface enp0s3 inet dhcp\\n\" > /etc/network/interfaces'; "
+    "in-target systemctl enable networking\n"
+)
+)
+
+with open(destination, "w", encoding="utf-8") as f:
+    f.writelines(result)
+PY
+}
+
+create_template() {
     local NAME="$1"
     local RAM="$2"
     local CPU="$3"
     local DISK="$4"
     local HOSTNAME="$5"
-    local POST_INSTALL="$6"
+    local PRESEED="$6"
 
-    echo ""
-    echo "Comprobando $NAME..."
-
-    if VBoxManage showvminfo "$NAME" >/dev/null 2>&1; then
-        echo "$NAME ya existe. Se omite y se continúa."
-        return 0
-    fi
-
-    echo "Creando $NAME..."
-
+    local GENERATED="$BUILD/preseed/$NAME.cfg"
     local VM_DIR="$HOME/VirtualBox VMs/$NAME"
 
-    VBoxManage createvm \
+    if "$VBOX" showvminfo "$NAME" >/dev/null 2>&1; then
+        die "$NAME ya existe. No se sobrescribirá automáticamente."
+    fi
+
+    prepare_preseed "$PRESEED" "$GENERATED"
+
+    echo
+    echo "===== Creando $NAME ====="
+    echo "Red durante instalación: NAT"
+
+    "$VBOX" createvm \
         --name "$NAME" \
         --ostype Debian_64 \
         --basefolder "$HOME/VirtualBox VMs" \
         --register
 
-    if [[ "$NETWORK_MODE" == "intnet" ]]; then
-    VBoxManage modifyvm "$NAME" \
+    mkdir -p "$VM_DIR"
+
+    "$VBOX" modifyvm "$NAME" \
         --memory "$RAM" \
         --cpus "$CPU" \
-        --nic1 intnet \
-        --intnet1 "$NETWORK_NAME" \
-        --cableconnected1 on \
-        --boot1 dvd \
-        --boot2 disk
-elif [[ "$NETWORK_MODE" == "nat" ]]; then
-    VBoxManage modifyvm "$NAME" \
-        --memory "$RAM" \
-        --cpus "$CPU" \
+        --ioapic on \
         --nic1 nat \
         --cableconnected1 on \
         --boot1 dvd \
         --boot2 disk
-else
-    die "NETWORK_MODE no válido: $NETWORK_MODE"
-fi
-    VBoxManage createmedium disk \
+
+    "$VBOX" createmedium disk \
         --filename "$VM_DIR/$NAME.vdi" \
         --size "$((DISK * 1024))" \
         --format VDI
 
-    VBoxManage storagectl "$NAME" \
+    "$VBOX" storagectl "$NAME" \
         --name SATA \
         --add sata \
         --controller IntelAhci
 
-    VBoxManage storageattach "$NAME" \
+    "$VBOX" storageattach "$NAME" \
         --storagectl SATA \
         --port 0 \
         --device 0 \
         --type hdd \
         --medium "$VM_DIR/$NAME.vdi"
 
-    VBoxManage storageattach "$NAME" \
-        --storagectl SATA \
-        --port 1 \
-        --device 0 \
-        --type dvddrive \
-        --medium "$DEBIAN_ISO_PATH"
+    "$VBOX" unattended install "$NAME" \
+        --iso="$ISO" \
+        --script-template="$GENERATED" \
+        --user="$VM_USER" \
+        --user-password-file="$PASSWORD_FILE" \
+        --full-user-name="VirtualCorp Admin" \
+        --hostname="$HOSTNAME.local" \
+        --locale=es_ES \
+        --country=ES \
+        --time-zone=Europe/Madrid \
+        --start-vm=headless
 
-    echo "Preparando instalación automática de $NAME..."
+    echo "Esperando a que termine la instalación de $NAME..."
 
-    VBoxManage unattended install "$NAME" \
-    --iso="$DEBIAN_ISO_PATH" \
-    --user="$VM_USER" \
-    --user-password="$VM_PASSWORD" \
-    --full-user-name="VirtualCorp Admin" \
-    --hostname="$HOSTNAME.local" \
-    --locale="es_ES" \
-    --country="ES" \
-    --time-zone="Europe/Madrid" \
-    --post-install-command="chroot /target /bin/sh -c '$POST_INSTALL'" \
-    --start-vm=headless
+    local elapsed=0
+    local state=""
 
-echo "Instalación iniciada: $NAME"
+    while (( elapsed < TIMEOUT )); do
+        state=$("$VBOX" showvminfo "$NAME" --machinereadable |
+            sed -n 's/^VMState="\([^"]*\)"/\1/p')
 
-TIMEOUT=1800
-ELAPSED=0
-STATE=""
+        [[ "$state" == "poweroff" ]] && break
 
-# Primero esperar a que la máquina arranque
-echo "Esperando a que arranque $NAME..."
+        sleep 10
+        elapsed=$((elapsed + 10))
+    done
 
-while [[ $ELAPSED -lt $TIMEOUT ]]; do
-    STATE=$(VBoxManage showvminfo "$NAME" --machinereadable |
-        sed -n 's/^VMState="\([^"]*\)"/\1/p')
+    [[ "$state" == "poweroff" ]] ||
+        die "$NAME no terminó o no se apagó. Estado: $state"
 
-    [[ "$STATE" == "running" ]] && break
+    echo "Instalación terminada. Configurando red privada DHCP..."
 
-    sleep 10
-    ELAPSED=$((ELAPSED + 10))
-done
+    "$VBOX" modifyvm "$NAME" \
+        --nic1 intnet \
+        --intnet1 "$NETWORK_NAME" \
+        --cableconnected1 on
 
-if [[ "$STATE" != "running" ]]; then
-    echo "ERROR: $NAME no llegó a arrancar."
-    return 1
-fi
+    "$VBOX" snapshot "$NAME" take deploy-base
 
-# Después esperar a que termine la instalación y se apague
-echo "Esperando a que termine la instalación de $NAME..."
-
-ELAPSED=0
-
-while [[ $ELAPSED -lt $TIMEOUT ]]; do
-    STATE=$(VBoxManage showvminfo "$NAME" --machinereadable |
-        sed -n 's/^VMState="\([^"]*\)"/\1/p')
-
-    [[ "$STATE" == "poweroff" ]] && break
-
-    sleep 10
-    ELAPSED=$((ELAPSED + 10))
-done
-
-if [[ "$STATE" != "poweroff" ]]; then
-    echo "ERROR: $NAME no terminó dentro del tiempo esperado."
-    return 1
-fi
-
-# Cambiar NAT por la red interna definitiva
-echo "Cambiando $NAME a la red interna pl0..."
-
-VBoxManage modifyvm "$NAME" \
-    --nic1 intnet \
-    --intnet1 "pl0" \
-    --cableconnected1 on
-
-echo "$NAME preparado correctamente."
+    echo "OK: $NAME preparado."
 }
-# ==========================================
-# DEBIAN SERVER
-# ==========================================
 
-create_vm \
+create_template \
     "$SERVER_TEMPLATE" \
     "$VM_RAM_SERVER" \
     "$VM_CPU_SERVER" \
     "$VM_DISK_SERVER" \
     "$SERVER_HOSTNAME" \
-    "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo"
+    "$ROOT/infrastructure/preseed/server.cfg"
 
-# ==========================================
-# DEBIAN DESKTOP
-# ==========================================
-
-create_vm \
+create_template \
     "$DESKTOP_TEMPLATE" \
     "$VM_RAM_DESKTOP" \
     "$VM_CPU_DESKTOP" \
     "$VM_DISK_DESKTOP" \
     "$DESKTOP_HOSTNAME" \
-    "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y lxqt lightdm sudo"
+    "$ROOT/infrastructure/preseed/desktop.cfg"
 
-echo ""
-echo "======================================"
-echo "PROCESO DE CREACIÓN FINALIZADO"
-echo "======================================"
-
-VBoxManage list vms
+echo
+echo "Plantillas creadas correctamente."
+"$VBOX" list vms

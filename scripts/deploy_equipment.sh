@@ -40,13 +40,13 @@ for ITEM in "${EQUIPMENT[@]}"; do
     fi
 
     SNAPSHOT_UUID=$("$VBOX" showvminfo "$TEMPLATE" --machinereadable |
-        sed -n 's/^CurrentSnapshotUUID="{\([^}]*\)}"/\1/p')
+        sed -n 's/^CurrentSnapshotUUID="\([^"]*\)"/\1/p')
 
     if [[ -z "$SNAPSHOT_UUID" ]]; then
         echo "Creando snapshot base de $TEMPLATE..."
         "$VBOX" snapshot "$TEMPLATE" take deploy-base
         SNAPSHOT_UUID=$("$VBOX" showvminfo "$TEMPLATE" --machinereadable |
-            sed -n 's/^CurrentSnapshotUUID="{\([^}]*\)}"/\1/p')
+            sed -n 's/^CurrentSnapshotUUID="\([^"]*\)"/\1/p')
     fi
 
     if [[ -z "$SNAPSHOT_UUID" ]]; then
@@ -68,4 +68,6 @@ for ITEM in "${EQUIPMENT[@]}"; do
 done
 
 echo
+bash scripts/deploy_pve01.sh
+
 echo "Despliegue terminado."

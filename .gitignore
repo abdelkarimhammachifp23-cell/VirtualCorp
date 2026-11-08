@@ -208,3 +208,5 @@ __pycache__/
 venv/
 .venv/
 
+/artifacts/proxmox/answer.toml
+/iso/proxmox-ve_9.2-1-auto.iso

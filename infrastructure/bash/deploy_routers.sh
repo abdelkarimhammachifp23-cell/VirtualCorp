@@ -15,8 +15,8 @@ check_prerequisites
 
 # Desplegament de mikrotik0
 create_router "mikrotik0" 2200 \
-  --intnets "r0-r1" "dmz" \
-  --ips "10.10.0.225/30" "10.10.0.193/27" \
+  --intnets "r0-r1" "dmz" "privada" \
+  --ips "10.10.0.225/30" "10.10.0.193/27" "10.10.0.129/26" \
   --nat
 
 # Desplegament de mikrotik1
