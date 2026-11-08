@@ -219,7 +219,8 @@ create_template \
     "$VM_CPU_SERVER" \
     "$VM_DISK_SERVER" \
     "$SERVER_HOSTNAME" \
-    "$ROOT/infrastructure/preseed/server.cfg"
+    "$ROOT/infrastructure/preseed/server.cfg" &
+SERVER_PID=$!
 
 create_template \
     "$DESKTOP_TEMPLATE" \
@@ -227,8 +228,19 @@ create_template \
     "$VM_CPU_DESKTOP" \
     "$VM_DISK_DESKTOP" \
     "$DESKTOP_HOSTNAME" \
-    "$ROOT/infrastructure/preseed/desktop.cfg"
+    "$ROOT/infrastructure/preseed/desktop.cfg" &
+DESKTOP_PID=$!
+
+SERVER_STATUS=0
+DESKTOP_STATUS=0
+
+wait "$SERVER_PID" || SERVER_STATUS=$?
+wait "$DESKTOP_PID" || DESKTOP_STATUS=$?
+
+if (( SERVER_STATUS != 0 || DESKTOP_STATUS != 0 )); then
+    die "Ha fallado la creación de una o ambas plantillas."
+fi
 
 echo
-echo "Plantillas creadas correctamente."
+echo "Las dos plantillas se han creado correctamente."
 "$VBOX" list vms
