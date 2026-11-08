@@ -110,7 +110,6 @@ result.append(
     "in-target sh -c 'printf \"auto lo\\niface lo inet loopback\\n\\nallow-hotplug enp0s3\\niface enp0s3 inet dhcp\\n\" > /etc/network/interfaces'; "
     "in-target systemctl enable networking\n"
 )
-)
 
 with open(destination, "w", encoding="utf-8") as f:
     f.writelines(result)
