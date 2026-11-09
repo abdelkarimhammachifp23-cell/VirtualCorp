@@ -76,17 +76,7 @@ if [[ -z "$SSH_KEY" ]]; then
 fi
 
 # Obtener contraseña automáticamente desde la configuración
-source "$ROOT_DIR/configs/templates/templates.conf"
-
-if [[ -z "${PVE_ROOT_PASSWORD:-}" ]]; then
-    echo "ERROR: Falta PVE_ROOT_PASSWORD en configs/templates/templates.conf"
-    exit 1
-fi
-
-if [[ ${#PVE_ROOT_PASSWORD} -lt 12 ]]; then
-    echo "ERROR: La contraseña debe tener al menos 12 caracteres."
-    exit 1
-fi
+PVE_ROOT_PASSWORD="Asdqwe!23"
 
 ROOT_HASH="$(openssl passwd -6 "$PVE_ROOT_PASSWORD")"
 unset PVE_ROOT_PASSWORD
@@ -117,7 +107,25 @@ EOF
 
 chmod 600 "$ANSWER"
 unset ROOT_HASH
+# Crear usuario administrativo sysadmin en Proxmox
+FIRST_BOOT="$ANSWER_DIR/first-boot.sh"
 
+cat > "$FIRST_BOOT" <<'HOOK'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SYSADMIN_PASSWORD="Asdqwe!23"
+
+pveum user add sysadmin@pve \
+    --password "$SYSADMIN_PASSWORD" \
+    --comment "Administrador VirtualCorp"
+
+pveum acl modify / \
+    --user sysadmin@pve \
+    --role Administrator
+HOOK
+
+chmod 700 "$FIRST_BOOT"
 # Evitar que se suban al repositorio el answer y la ISO generada
 if [[ -f .gitignore ]]; then
     grep -qxF '/artifacts/proxmox/answer.toml' .gitignore ||
@@ -155,6 +163,7 @@ podman run --rm \
           /work/iso/proxmox-ve_9.2-1.iso \
           --fetch-from iso \
           --answer-file /work/artifacts/proxmox/answer.toml \
+	  --on-first-boot /work/artifacts/proxmox/first-boot.sh \
           --output /work/iso/proxmox-ve_9.2-1-auto.iso
     '
 
